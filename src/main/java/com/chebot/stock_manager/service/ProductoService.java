@@ -86,8 +86,16 @@ public class ProductoService {
         } catch (Exception e) {
             throw new RuntimeException("Error al insertar producto vía JDBC: " + e.getMessage(), e);
         }
-    }
 
+    }
+    @Transactional
+    public void eliminarProducto(Long id) {
+        if (id == null) {
+            throw new IllegalArgumentException("El ID del producto no puede ser nulo para la eliminación.");
+        }
+        // El método deleteById() ya viene de JpaRepository
+        productoRepository.deleteById(id);
+    }
     // --- MÉTODOS DE LECTURA Y FILTRADO ---
 
     public List<Producto> obtenerTodosLosProductos() {

@@ -16,10 +16,13 @@ import java.io.File;
 import java.io.IOException;
 import java.io.ByteArrayInputStream;
 import java.util.List;
+import java.util.Optional;
 
 @Controller
 public class StockController {
 
+    // Campo para almacenar temporalmente el ID del producto que se está editando/actualizando.
+    private Long productoEnEdicionId = null;
     // Inyección del Servicio (Spring se encarga de crear esta instancia)
     private final ProductoService productoService;
     private final ObservableList<Producto> productosList = FXCollections.observableArrayList();
@@ -33,7 +36,7 @@ public class StockController {
     // Campos de entrada para AGREGAR/EDITAR
     @FXML private TextField txtReferencia;
     @FXML private TextField txtDescripcion;
-    @FXML private TextField txtCantidad;
+    @FXML private Spinner<Integer> spinnerCantidad;
     @FXML private ComboBox<String> cmbEstado;
     @FXML private TextArea txtObservaciones;
     @FXML private ImageView imgQrCode; // Necesitas añadir este fx:id en tu FXML
@@ -57,7 +60,8 @@ public class StockController {
         // Inicializar ComboBox de Filtro
         cmbFiltroCriterio.getItems().addAll("Referencia", "Descripción", "Estado");
         cmbFiltroCriterio.setValue("Referencia");
-
+        SpinnerValueFactory<Integer> valueFactory = new SpinnerValueFactory.IntegerSpinnerValueFactory(0, 10000, 1);
+        spinnerCantidad.setValueFactory(valueFactory);
         // 1. Configurar las columnas de la tabla (CRUCIAL para ver datos)
         configurarColumnasTabla();
 
@@ -67,6 +71,12 @@ public class StockController {
         tblStock.getSelectionModel().selectedItemProperty().addListener((obs, oldSelection, newSelection) -> {
             if (newSelection != null) {
                 mostrarQrEnVista(newSelection);
+            }
+        });
+        // Opcional: Configurar la tabla para que con doble clic cargue los datos
+        tblStock.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2) {
+                cargarProductoParaEdicion();
             }
         });
     }
@@ -111,26 +121,39 @@ public class StockController {
     @FXML
     public void agregarProducto() {
         try {
-            Producto nuevoProducto = new Producto(
+            // 1. Creamos el objeto con los datos del formulario
+            Producto productoAguardar = new Producto(
                     txtReferencia.getText(),
                     txtDescripcion.getText(),
-                    // Se utiliza Integer.parseInt para convertir el texto de cantidad
-                    Integer.parseInt(txtCantidad.getText()),
+                    spinnerCantidad.getValue(),
                     cmbEstado.getValue(),
                     txtObservaciones.getText()
             );
 
-            productoService.guardarProducto(nuevoProducto);
+            // --- SOLUCIÓN DEL ERROR UNIQUE ---
+            // 2. Si la variable tiene un ID, se lo asignamos al producto.
+            // Esto le dice al Servicio: "¡Es una edición, no una inserción!"
+            if (productoEnEdicionId != null) {
+                productoAguardar.setId(productoEnEdicionId);
+            }
+
+            // 3. Llamamos al servicio
+            // Si tiene ID -> El servicio usará productoRepository.save() (UPDATE) -> ¡ÉXITO!
+            // Si no tiene ID -> El servicio usará JDBC (INSERT) -> ¡ÉXITO!
+            productoService.guardarProducto(productoAguardar);
+
+            // 4. Limpieza
             refrescarTabla();
-            limpiarCampos();
-            mostrarAlerta(Alert.AlertType.INFORMATION, "Éxito", "Producto agregado correctamente.");
+            limpiarCampos(); // Esto debe poner productoEnEdicionId = null
+
+            mostrarAlerta(Alert.AlertType.INFORMATION, "Éxito", "Operación realizada correctamente.");
 
         } catch (NumberFormatException e) {
-            mostrarAlerta(Alert.AlertType.ERROR, "Error", "La Cantidad debe ser un número válido.");
-        } catch (IllegalArgumentException e) {
-            mostrarAlerta(Alert.AlertType.ERROR, "Error de Validación", e.getMessage());
+            mostrarAlerta(Alert.AlertType.ERROR, "Error", "La cantidad debe ser un número.");
         } catch (Exception e) {
-            mostrarAlerta(Alert.AlertType.ERROR, "Error de DB", "Ocurrió un error al guardar: " + e.getMessage());
+            // Aquí verás el mensaje de error si algo más falla
+            e.printStackTrace(); // Imprime en consola para ver detalles
+            mostrarAlerta(Alert.AlertType.ERROR, "Error de DB", e.getMessage());
         }
     }
 
@@ -156,9 +179,12 @@ public class StockController {
     private void limpiarCampos() {
         txtReferencia.clear();
         txtDescripcion.clear();
-        txtCantidad.clear();
+        spinnerCantidad.getValueFactory().setValue(1);
         txtObservaciones.clear();
         cmbEstado.setValue("Disponible");
+
+        // IMPORTANTE: Reiniciar el ID de edición a null
+        productoEnEdicionId = null;
     }
 
     private void mostrarAlerta(Alert.AlertType type, String title, String message) {
@@ -215,5 +241,48 @@ public class StockController {
             }
         }
     }
+    @FXML
+    public void cargarProductoParaEdicion() {
+        Producto seleccionado = tblStock.getSelectionModel().getSelectedItem();
+
+        if (seleccionado != null) {
+            // --- AQUÍ ESTÁ LA CLAVE ---
+            // Guardamos el ID en nuestra variable temporal
+            productoEnEdicionId = seleccionado.getId();
+
+            // Cargar los datos visuales
+            txtReferencia.setText(seleccionado.getReferencia());
+            txtDescripcion.setText(seleccionado.getDescripcion());
+            spinnerCantidad.getValueFactory().setValue(seleccionado.getCantidad());
+            cmbEstado.setValue(seleccionado.getEstado());
+            txtObservaciones.setText(seleccionado.getObservaciones());
+
+            // (Opcional) Mostrar el QR si lo tienes implementado
+        }
+    }
+    @FXML
+    public void eliminarProducto() {
+        Producto seleccionado = tblStock.getSelectionModel().getSelectedItem();
+
+        if (seleccionado == null) {
+            mostrarAlerta(Alert.AlertType.WARNING, "Advertencia", "Por favor, selecciona un producto para eliminar.");
+            return;
+        }
+
+        Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION, "¿Estás seguro de que quieres eliminar la referencia: " + seleccionado.getReferencia() + "?", ButtonType.YES, ButtonType.NO);
+        Optional<ButtonType> result = confirmAlert.showAndWait();
+
+        if (result.isPresent() && result.get() == ButtonType.YES) {
+            try {
+                productoService.eliminarProducto(seleccionado.getId());
+                refrescarTabla();
+                limpiarCampos();
+                mostrarAlerta(Alert.AlertType.INFORMATION, "Éxito", "Producto eliminado correctamente.");
+            } catch (Exception e) {
+                mostrarAlerta(Alert.AlertType.ERROR, "Error de DB", "No se pudo eliminar el producto.");
+            }
+        }
+    }
+
 
 }
